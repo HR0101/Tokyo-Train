@@ -1,0 +1,13 @@
+# 依存パッケージ
+node_modules/
+
+# ビルド成果物
+dist/
+
+# 環境変数（APIトークンを含むためコミットしない）
+.env
+.env.local
+
+# OS / エディタ
+.DS_Store
+.vscode/
