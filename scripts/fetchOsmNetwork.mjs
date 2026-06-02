@@ -157,21 +157,16 @@ function stopCoverage(path, stops) {
   return cover;
 }
 
-// リレーションの way メンバを「端点の一致」で正しく連結し、
-// 最も長い連結成分（1 本のポリライン）を返す。
-// way の並び順に依存しないため、非隣接 way を直線でつなぐ不具合が起きない。
-function buildPath(rel) {
+// リレーションの way メンバを「端点の一致」で連結し、すべての連結成分（ポリライン群）を返す。
+function buildComponents(rel) {
   const ways = rel.members
     .filter((m) => m.type === 'way' && Array.isArray(m.geometry) && m.geometry.length >= 2)
     .map((m) => m.geometry.map((g) => [g.lon, g.lat]));
   if (!ways.length) {
-    // way が無い場合は node メンバ座標を順に使う
-    return rel.members
-      .filter((m) => m.type === 'node' && m.lat != null)
-      .map((n) => [n.lon, n.lat]);
+    const nodes = rel.members.filter((m) => m.type === 'node' && m.lat != null).map((n) => [n.lon, n.lat]);
+    return nodes.length >= 2 ? [nodes] : [];
   }
 
-  const stops = stopCoords(rel);
   const used = new Array(ways.length).fill(false);
   const components = [];
   for (let seed = 0; seed < ways.length; seed++) {
@@ -227,19 +222,80 @@ function buildPath(rel) {
 
     components.push(path);
   }
+  return components;
+}
 
-  // 最も多くの停車駅を含む連結成分を採用する（駅の無い断片を避ける。同数なら点数が多い方）
-  let best = [];
-  let bestScore = -1;
-  for (const comp of components) {
-    const cover = stops.length ? stopCoverage(comp, stops) : 0;
-    const score = cover * 1e7 + comp.length;
-    if (score > bestScore) {
-      bestScore = score;
-      best = comp;
+// 駅が成分（path）に整合しているとみなす最大距離（メートル）
+const ALIGN_M = 300;
+
+// 成分上で座標に最も近い点のインデックスと距離
+function nearestOnComp(comp, lng, lat) {
+  let best = Infinity;
+  let bi = 0;
+  for (let i = 0; i < comp.length; i++) {
+    const dpt = distMeters(lng, lat, comp[i][0], comp[i][1]);
+    if (dpt < best) {
+      best = dpt;
+      bi = i;
     }
   }
-  return best;
+  return { bi, best };
+}
+
+// 1 つの成分上で駅 A→B を結ぶ線路区間を返す（整合し、遠回りでないときのみ）
+function trackBetween(comp, A, B) {
+  const na = nearestOnComp(comp, A.lng, A.lat);
+  const nb = nearestOnComp(comp, B.lng, B.lat);
+  if (na.best >= ALIGN_M || nb.best >= ALIGN_M || na.bi === nb.bi) return null;
+  const lo = Math.min(na.bi, nb.bi);
+  const hi = Math.max(na.bi, nb.bi);
+  let trackLen = 0;
+  for (let k = lo; k < hi; k++) trackLen += distMeters(comp[k][0], comp[k][1], comp[k + 1][0], comp[k + 1][1]);
+  const straight = distMeters(A.lng, A.lat, B.lng, B.lat);
+  if (trackLen > straight * 2.5 + 300) return null;
+  let seg = comp.slice(lo, hi + 1);
+  if (na.bi > nb.bi) seg = seg.reverse();
+  return { seg, score: na.best + nb.best };
+}
+
+// 全成分から駅 A→B の最良の線路区間を返す（無ければ直線）
+function reconstructBetween(components, A, B) {
+  let best = null;
+  for (const comp of components) {
+    const r = trackBetween(comp, A, B);
+    if (r && (!best || r.score < best.score)) best = r;
+  }
+  return best ? best.seg : [[A.lng, A.lat], [B.lng, B.lat]];
+}
+
+// 駅の並び順に沿って、隣接駅間を線路（または直線）でつなぎ、全駅をカバーする path を再構築する
+function reconstructPath(components, stations) {
+  const path = [];
+  const push = (p) => {
+    const last = path[path.length - 1];
+    if (!last || last[0] !== p[0] || last[1] !== p[1]) path.push(p);
+  };
+  for (let i = 0; i + 1 < stations.length; i++) {
+    const seg = reconstructBetween(components, stations[i], stations[i + 1]);
+    for (const p of seg) push(p);
+  }
+  return path;
+}
+
+// 橋渡し（駅間に線路が無い直線）の許容上限（メートル）。これを超える隙間で分割する。
+const BRIDGE_MAX_M = 5000;
+
+// クリップ＋丸め＋連続重複除去のうえ、長すぎる橋渡し（巨大チャート）で分割し最長区間を残す。
+// 都市部の短い橋渡し（隣接駅間）は保持される。
+function clipDedup(path) {
+  const out = [];
+  for (const p of path) {
+    if (!inClip(p[0], p[1])) continue;
+    const q = [round(p[0]), round(p[1])];
+    const last = out[out.length - 1];
+    if (!last || last[0] !== q[0] || last[1] !== q[1]) out.push(q);
+  }
+  return longestContiguousRun(out, BRIDGE_MAX_M);
 }
 
 // 連続点間の大きなギャップで分割し、最も長い連続区間だけを返す。
@@ -390,23 +446,44 @@ out geom;`,
     const tags = rel.tags || {};
     const name = baseName(tags);
     if (!name) continue;
-    const path = cleanPath(buildPath(rel));
+    const lineStations = buildLineStations(rel); // この路線の停車駅（順序つき）
+    const components = buildComponents(rel);
+
+    // 駅順に沿って全駅をカバーする path を再構築する（駅情報が無ければ最長成分）
+    let raw;
+    if (lineStations.length >= 2) {
+      raw = reconstructPath(components, lineStations);
+    } else {
+      raw = components.slice().sort((a, b) => b.length - a.length)[0] || [];
+    }
+    if (raw.length < 2) continue;
+
+    // 環状判定：始終点駅が近接し十分な面積を囲むなら、閉合区間を足して環状にする
+    let isLoop = false;
+    if (lineStations.length > 3) {
+      const f = lineStations[0];
+      const l = lineStations[lineStations.length - 1];
+      const span = distMeters(f.lng, f.lat, l.lng, l.lat);
+      if (span < 3000 && polygonAreaM2(raw) > LOOP_MIN_AREA_M2) {
+        const closing = reconstructBetween(components, l, f);
+        for (const p of closing) raw.push(p);
+        isLoop = true;
+      }
+    }
+
+    const path = clipDedup(raw);
     if (path.length < 2) continue;
-    const first = path[0];
-    const last = path[path.length - 1];
-    // 端点が近接し、かつ十分な面積を囲む場合のみ環状とみなす（往復線の誤判定を防ぐ）
-    const isLoop = dist2(first, last) < 5e-5 && polygonAreaM2(path) > LOOP_MIN_AREA_M2;
     const line = {
       id: `osm-${rel.id}`,
       name,
       color: parseColour(tags.colour),
       isLoop,
       path,
-      stations: buildLineStations(rel), // この路線の停車駅（順序つき）
+      stations: lineStations,
     };
     const prev = byName.get(name);
-    // パスがより長い（≒より完全な）変種を採用。駅リストもそれに追従する。
-    if (!prev || line.path.length > prev.path.length) byName.set(name, line);
+    // 駅数がより多い（≒より完全な）変種を採用
+    if (!prev || (line.stations?.length ?? 0) > (prev.stations?.length ?? 0)) byName.set(name, line);
   }
 
   // 4) パレットで色を補完
