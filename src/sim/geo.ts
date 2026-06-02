@@ -19,6 +19,15 @@ export function lerpCoord(a: LngLat, b: LngLat, t: number): LngLat {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 }
 
+// 2 点を結ぶ進行方位（度、北から時計回り 0〜360）を求める
+export function bearingDeg(a: LngLat, b: LngLat): number {
+  const meanLatRad = ((a[1] + b[1]) / 2) * DEG_TO_RAD;
+  const east = (b[0] - a[0]) * Math.cos(meanLatRad);
+  const north = b[1] - a[1];
+  const deg = Math.atan2(east, north) * (180 / Math.PI);
+  return (deg + 360) % 360;
+}
+
 // ポリラインの全長（メートル）を求める。isLoop なら終点と始点も結ぶ。
 export function pathLength(path: LngLat[], isLoop: boolean): number {
   let total = 0;

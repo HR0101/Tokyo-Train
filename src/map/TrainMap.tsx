@@ -1,25 +1,60 @@
 import { useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { ColumnLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
+import { PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
+import { SimpleMeshLayer } from '@deck.gl/mesh-layers';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { DELAY_THRESHOLD_SEC, TrainSim } from '../sim/TrainSim';
 import { distanceMeters } from '../sim/geo';
 import type { RouteHighlight } from '../sim/router';
 import type { LngLat, RailLine, StationPoint, TrainState } from '../sim/types';
 
-// 地図の初期表示（首都圏全体を俯瞰、ピッチを付けて 3D 表示）
-const INITIAL_CENTER: [number, number] = [139.73, 35.66];
-const INITIAL_ZOOM = 9.3;
-const INITIAL_PITCH = 50;
-const INITIAL_BEARING = -17;
+// 地図の初期表示（都心を3Dで近接俯瞰。引くと首都圏全体が見える）
+const INITIAL_CENTER: [number, number] = [139.764, 35.681];
+const INITIAL_ZOOM = 13.2;
+const INITIAL_PITCH = 62;
+const INITIAL_BEARING = -25;
 
 // CARTO の無料ダークスタイル（APIキー不要）
 const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
 
-// 列車ブロックの見た目（メートル）
-const TRAIN_HEIGHT_M = 130;
-const TRAIN_RADIUS_M = 70;
+// 3D 列車（直方体）の寸法（メートル）。線路方向に長い箱。
+const TRAIN_LEN_M = 240; // 進行方向の長さ
+const TRAIN_WID_M = 60; // 幅
+const TRAIN_HGT_M = 60; // 高さ
+
+// 単位ボックスのメッシュ（x:幅[-0.5,0.5] / y:長さ[-0.5,0.5] / z:高さ[0,1]、底面を地面に置く）
+function makeBoxMesh() {
+  const faces = [
+    { n: [0, 0, 1], v: [[-0.5, -0.5, 1], [0.5, -0.5, 1], [0.5, 0.5, 1], [-0.5, 0.5, 1]] },
+    { n: [0, 0, -1], v: [[-0.5, 0.5, 0], [0.5, 0.5, 0], [0.5, -0.5, 0], [-0.5, -0.5, 0]] },
+    { n: [0, 1, 0], v: [[-0.5, 0.5, 0], [-0.5, 0.5, 1], [0.5, 0.5, 1], [0.5, 0.5, 0]] },
+    { n: [0, -1, 0], v: [[0.5, -0.5, 0], [0.5, -0.5, 1], [-0.5, -0.5, 1], [-0.5, -0.5, 0]] },
+    { n: [1, 0, 0], v: [[0.5, 0.5, 0], [0.5, 0.5, 1], [0.5, -0.5, 1], [0.5, -0.5, 0]] },
+    { n: [-1, 0, 0], v: [[-0.5, -0.5, 0], [-0.5, -0.5, 1], [-0.5, 0.5, 1], [-0.5, 0.5, 0]] },
+  ];
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  let base = 0;
+  for (const f of faces) {
+    for (const vert of f.v) {
+      positions.push(vert[0], vert[1], vert[2]);
+      normals.push(f.n[0], f.n[1], f.n[2]);
+    }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    base += 4;
+  }
+  return {
+    attributes: {
+      positions: { value: new Float32Array(positions), size: 3 },
+      normals: { value: new Float32Array(normals), size: 3 },
+    },
+    indices: { value: new Uint16Array(indices), size: 1 },
+  };
+}
+
+const TRAIN_MESH = makeBoxMesh();
 
 // dt の上限（タブ非表示から復帰したときの飛びを抑える）
 const MAX_DT_SEC = 0.5;
@@ -167,6 +202,66 @@ export default function TrainMap({
       },
     });
     map.addControl(overlay as unknown as maplibregl.IControl);
+
+    // 3D ビルを追加してデジタルツインらしい立体感を出す
+    map.on('load', () => {
+      try {
+        // 既存の平面ビルレイヤを隠す
+        for (const id of ['building', 'building-top']) {
+          if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+        }
+        // ラベル（symbol）の下に 3D ビルを挿入してラベルを上に保つ
+        const firstSymbol = map.getStyle().layers?.find((l) => l.type === 'symbol')?.id;
+        map.addLayer(
+          {
+            id: '3d-buildings',
+            source: 'carto',
+            'source-layer': 'building',
+            type: 'fill-extrusion',
+            minzoom: 11,
+            // 3D 表示しない指定の建物は除外
+            filter: ['!=', ['get', 'hide_3d'], true],
+            paint: {
+              // 高さに応じて色を変える（低層→暗い紺、高層→明るい青）
+              'fill-extrusion-color': [
+                'interpolate',
+                ['linear'],
+                ['coalesce', ['get', 'render_height'], 12],
+                0, '#0e1626',
+                25, '#1a2742',
+                70, '#284568',
+                160, '#3a608f',
+              ],
+              // ズームに応じてビルを立ち上げる
+              'fill-extrusion-height': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                11, 0,
+                13, ['coalesce', ['get', 'render_height'], 12],
+              ],
+              'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+              'fill-extrusion-opacity': 0.92,
+            },
+          },
+          firstSymbol,
+        );
+        // 斜め上からの光で建物の面に陰影を付け、立体感を強める
+        map.setLight({ anchor: 'viewport', color: '#dfeaff', intensity: 0.4, position: [1.5, 200, 35] });
+        // 空（大気）で地平線に奥行きを出す（対応バージョンのみ）
+        const skyMap = map as unknown as { setSky?: (s: Record<string, unknown>) => void };
+        skyMap.setSky?.({
+          'sky-color': '#0b1322',
+          'sky-horizon-blend': 0.5,
+          'horizon-color': '#16233c',
+          'horizon-fog-blend': 0.6,
+          'fog-color': '#080c16',
+          'fog-ground-blend': 0.5,
+        });
+      } catch (err) {
+        console.warn('3D ビルの追加に失敗しました:', err);
+      }
+    });
 
     mapRef.current = map;
     overlayRef.current = overlay;
@@ -323,23 +418,28 @@ export default function TrainMap({
               getFillColor: focus || routeActive ? [180, 195, 215, 55] : [205, 220, 240, 150],
               updateTriggers: { getFillColor: dimKey },
             }),
-            // 列車（3D ブロック）
-            new ColumnLayer<TrainState>({
+            // 列車（線路方向に向く 3D 直方体）
+            new SimpleMeshLayer<TrainState>({
               id: 'trains',
               data: trains,
-              diskResolution: 4,
-              radius: TRAIN_RADIUS_M,
-              extruded: true,
+              mesh: TRAIN_MESH,
               pickable: true,
-              elevationScale: 1,
+              sizeScale: 1,
+              parameters: { cullMode: 'none' },
+              material: { ambient: 0.7, diffuse: 0.5, shininess: 40, specularColor: [90, 100, 120] },
               getPosition: (t) => [t.lng, t.lat],
-              getElevation: (t) =>
-                routeActive || (focus && t.lineId !== focus) ? 40 : TRAIN_HEIGHT_M,
-              getFillColor: (t) => {
+              // 進行方位で向きを合わせる（[pitch, yaw, roll]、roll=Z軸回り=方位）
+              getOrientation: (t) => [0, 0, -t.bearing],
+              getScale: (t) => {
                 const dimmed = routeActive || (focus && t.lineId !== focus);
-                if (t.delaySec >= DELAY_THRESHOLD_SEC) return [255, 70, 70, dimmed ? 50 : 235];
-                return [t.color[0], t.color[1], t.color[2], dimmed ? 45 : 235];
+                return [TRAIN_WID_M, TRAIN_LEN_M, dimmed ? TRAIN_HGT_M * 0.3 : TRAIN_HGT_M];
               },
+              getColor: (t) => {
+                const dimmed = routeActive || (focus && t.lineId !== focus);
+                if (t.delaySec >= DELAY_THRESHOLD_SEC) return [255, 70, 70, dimmed ? 55 : 255];
+                return [t.color[0], t.color[1], t.color[2], dimmed ? 50 : 255];
+              },
+              updateTriggers: { getScale: dimKey, getColor: dimKey },
             }),
             // フォーカス路線の駅（強調ドット）
             new ScatterplotLayer<StationPoint>({

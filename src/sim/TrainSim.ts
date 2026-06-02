@@ -1,5 +1,5 @@
 import type { LngLat, RailLine, TrainSeed, TrainState } from './types';
-import { distanceMeters, lerpCoord } from './geo';
+import { bearingDeg, distanceMeters, lerpCoord } from './geo';
 
 // 列車の内部状態
 interface TrainEntity {
@@ -117,6 +117,7 @@ export class TrainSim {
       }
 
       const pos: LngLat = lerpCoord(from, to, train.progress);
+      const heading = bearingDeg(from, to);
       // 路線上の位置（0〜1）を点インデックスから求める
       const n = line.path.length;
       const posIndex = train.segIndex + train.progress;
@@ -134,6 +135,7 @@ export class TrainSim {
         lineFraction,
         direction: train.direction,
         speedMps: train.speedMps,
+        bearing: heading,
       });
     }
     return states;

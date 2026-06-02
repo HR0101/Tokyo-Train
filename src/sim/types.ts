@@ -34,6 +34,7 @@ export interface TrainState {
   lineFraction: number; // 路線上の位置（0〜1）。ダッシュボードのストリップ表示に使う。
   direction: 1 | -1; // 進行方向
   speedMps: number; // 速度（m/s）。到着予測の算出に使う。
+  bearing: number; // 進行方位（度、北から時計回り）。3D列車の向きに使う。
 }
 
 // 列車の初期化に使うパラメータ
