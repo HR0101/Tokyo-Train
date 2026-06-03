@@ -62,9 +62,12 @@ export class TrainSim {
     }
   }
 
-  // 指定 ID 以外の列車を削除する（消えた列車の掃除）
-  retainTrains(ids: Set<string>): void {
-    for (const id of this.trains.keys()) {
+  // 指定 ID 以外の列車を削除する（消えた列車の掃除）。
+  // lineIds を渡すと、その路線群に属する列車だけを掃除対象にする
+  // （ハイブリッドモードで実列車だけを更新し、シミュレーション列車を残すために使う）。
+  retainTrains(ids: Set<string>, lineIds?: Set<string>): void {
+    for (const [id, train] of this.trains) {
+      if (lineIds && !lineIds.has(train.lineId)) continue;
       if (!ids.has(id)) {
         this.trains.delete(id);
       }

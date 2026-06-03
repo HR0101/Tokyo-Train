@@ -38,3 +38,12 @@ export interface OdptTrain {
   'odpt:delay'?: number; // 遅延（秒）
   'odpt:carComposition'?: number; // 編成両数
 }
+
+// 運行情報（遅延・運転見合わせなど）
+export interface OdptTrainInformation {
+  'owl:sameAs': string;
+  'odpt:operator'?: string; // 事業者ID
+  'odpt:railway'?: string; // 路線ID（平常時は省略されることもある）
+  'odpt:trainInformationStatus'?: { ja?: string; en?: string }; // 運行状況（平常時は無いことが多い）
+  'odpt:trainInformationText'?: { ja?: string; en?: string }; // 運行情報の本文
+}

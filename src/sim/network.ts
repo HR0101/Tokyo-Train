@@ -1,5 +1,11 @@
-import type { OdptTrain, Rgb } from '../odpt/types';
-import { fetchRailway, fetchStations, fetchTrains, LIVE_RAILWAYS } from '../odpt/client';
+import type { OdptTrain, OdptTrainInformation, Rgb } from '../odpt/types';
+import {
+  fetchRailway,
+  fetchStations,
+  fetchTrainInformation,
+  fetchTrains,
+  LIVE_RAILWAYS,
+} from '../odpt/client';
 import { pathLength } from './geo';
 import { TrainSim } from './TrainSim';
 import type { LngLat, RailLine, StationPoint } from './types';
@@ -296,6 +302,110 @@ export async function updateLiveTrains(sim: TrainSim, lines: RailLine[]): Promis
     }
   }
 
-  sim.retainTrains(activeIds);
+  // 実列車を持つ路線だけを掃除対象にし、ハイブリッド時のシミュレーション列車は残す
+  sim.retainTrains(activeIds, new Set(lines.map((l) => l.id)));
   return activeIds.size;
+}
+
+// --- ハイブリッドモード（OSM シミュレーション ＋ ODPT 実列車） -----
+
+// ハイブリッドのネットワーク。
+// simLines（OSM）はシミュレーション走行、liveLines（ODPT）は実列車で走行させる。
+export interface HybridNetwork {
+  lines: RailLine[]; // 地図に描く全路線
+  stations: StationPoint[];
+  simLines: RailLine[]; // シミュレーション対象（OSM 由来）
+  liveLines: RailLine[]; // 実列車対象（ODPT で実列車が取得できた路線のみ）
+}
+
+// OSM 全路線を土台に、ODPT で実列車が取得できる路線だけを実データに差し替える。
+export async function loadHybridNetwork(): Promise<HybridNetwork> {
+  const [osm, live] = await Promise.all([loadStaticNetwork(), loadLiveNetwork()]);
+
+  // 実列車が 1 編成以上取得できる ODPT 路線だけを「実列車路線」とする
+  // （JR・メトロは現状 0 件のため自動的に除外され、提供が再開すれば自動で対象になる）
+  const counts = await Promise.all(
+    live.lines.map((l) => fetchTrains(l.id).then((t) => t.length).catch(() => 0)),
+  );
+  const liveLines = live.lines.filter((_, i) => counts[i] > 0);
+
+  // 実列車路線と重複する OSM 路線を名前で除外し、二重描画を防ぐ
+  const liveKeywords = liveLines.map((l) => l.name.replace(/^(都営|東京メトロ|JR)/, '').trim());
+  const simLines = osm.lines.filter(
+    (o) => !liveKeywords.some((kw) => kw.length > 0 && o.name.includes(kw)),
+  );
+
+  const lines = [...simLines, ...liveLines];
+
+  // 駅は OSM 全駅を基本に、実列車路線の駅を名前で補完する
+  const stationByName = new Map<string, StationPoint>();
+  for (const s of osm.stations) if (!stationByName.has(s.name)) stationByName.set(s.name, s);
+  for (const s of live.stations) if (!stationByName.has(s.name)) stationByName.set(s.name, s);
+
+  return { lines, stations: [...stationByName.values()], simLines, liveLines };
+}
+
+// --- 運行情報（実データ連携） -------------------------------------
+
+// 運行情報を取得する事業者（提供のある東京メトロ・都営）
+const INFO_OPERATORS = ['odpt.Operator:TokyoMetro', 'odpt.Operator:Toei'];
+
+// 運行情報の路線ID → 日本語路線名（OSM 路線名との照合に使う）
+const INFO_RAILWAY_NAMES: Record<string, string> = {
+  'odpt.Railway:TokyoMetro.Ginza': '銀座線',
+  'odpt.Railway:TokyoMetro.Marunouchi': '丸ノ内線',
+  'odpt.Railway:TokyoMetro.MarunouchiBranch': '丸ノ内線',
+  'odpt.Railway:TokyoMetro.Hibiya': '日比谷線',
+  'odpt.Railway:TokyoMetro.Tozai': '東西線',
+  'odpt.Railway:TokyoMetro.Chiyoda': '千代田線',
+  'odpt.Railway:TokyoMetro.Yurakucho': '有楽町線',
+  'odpt.Railway:TokyoMetro.Hanzomon': '半蔵門線',
+  'odpt.Railway:TokyoMetro.Namboku': '南北線',
+  'odpt.Railway:TokyoMetro.Fukutoshin': '副都心線',
+  'odpt.Railway:Toei.Asakusa': '浅草線',
+  'odpt.Railway:Toei.Mita': '三田線',
+  'odpt.Railway:Toei.Shinjuku': '新宿線',
+  'odpt.Railway:Toei.Oedo': '大江戸線',
+  'odpt.Railway:Toei.Arakawa': '荒川線',
+  'odpt.Railway:Toei.NipporiToneri': '日暮里・舎人ライナー',
+};
+
+// 運行情報の深刻度
+export type ServiceSeverity = 'normal' | 'delay' | 'suspended';
+
+// 路線の運行状況
+export interface ServiceStatus {
+  lineName: string; // 日本語路線名
+  status: string; // 運行状況（ステータス）
+  text: string; // 本文
+  severity: ServiceSeverity;
+}
+
+// ステータス・本文の文言から深刻度を判定する
+function classifyService(status: string, text: string): ServiceSeverity {
+  const s = `${status} ${text}`;
+  if (s.includes('見合わせ')) return 'suspended';
+  if (/遅延|ダイヤ乱れ|遅れ/.test(s) && !/遅延はありません|遅れはありません/.test(s)) {
+    return 'delay';
+  }
+  return 'normal';
+}
+
+// 運行情報を取得し、路線名つきの状況リストを返す（提供のある事業者のみ）。
+// JR東日本は運行情報を提供していないため対象外。
+export async function fetchServiceStatus(): Promise<ServiceStatus[]> {
+  const results = await Promise.all(
+    INFO_OPERATORS.map((op) => fetchTrainInformation(op).catch(() => [] as OdptTrainInformation[])),
+  );
+  const out: ServiceStatus[] = [];
+  for (const list of results) {
+    for (const info of list) {
+      const lineName = INFO_RAILWAY_NAMES[info['odpt:railway'] ?? ''];
+      if (!lineName) continue;
+      const status = info['odpt:trainInformationStatus']?.ja ?? '';
+      const text = info['odpt:trainInformationText']?.ja ?? '';
+      out.push({ lineName, status, text, severity: classifyService(status, text) });
+    }
+  }
+  return out;
 }

@@ -1,4 +1,4 @@
-import type { OdptRailway, OdptStation, OdptTrain, Rgb } from './types';
+import type { OdptRailway, OdptStation, OdptTrain, OdptTrainInformation, Rgb } from './types';
 
 // ODPT API v4 のベースURL
 const API_BASE = 'https://api.odpt.org/api/v4';
@@ -35,6 +35,11 @@ export function fetchStations(railwayId: string): Promise<OdptStation[]> {
 // 列車現在位置を取得する
 export function fetchTrains(railwayId: string): Promise<OdptTrain[]> {
   return fetchOdpt<OdptTrain>('odpt:Train', { 'odpt:railway': railwayId });
+}
+
+// 運行情報を事業者単位で取得する
+export function fetchTrainInformation(operatorId: string): Promise<OdptTrainInformation[]> {
+  return fetchOdpt<OdptTrainInformation>('odpt:TrainInformation', { 'odpt:operator': operatorId });
 }
 
 // 実データモードで可視化する路線の定義

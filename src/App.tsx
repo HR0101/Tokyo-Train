@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import TrainMap from './map/TrainMap';
+import TrainMap, { type ReachData } from './map/TrainMap';
 import Dashboard from './dashboard/Dashboard';
 import StationPanel from './components/StationPanel';
 import RoutePanel from './components/RoutePanel';
 import Hud, { type HudMode } from './components/Hud';
 import { TrainSim } from './sim/TrainSim';
-import { loadLiveNetwork, loadStaticNetwork, seedStaticTrains, updateLiveTrains } from './sim/network';
-import { buildRouteGraph, buildRouteHighlight, findRoute } from './sim/router';
+import {
+  fetchServiceStatus,
+  loadHybridNetwork,
+  loadStaticNetwork,
+  seedStaticTrains,
+  updateLiveTrains,
+  type ServiceStatus,
+} from './sim/network';
+import { buildRouteGraph, buildRouteHighlight, findRoute, reachableTimes } from './sim/router';
 import { hasToken } from './odpt/client';
 import type { RailLine, StationPoint } from './sim/types';
 
@@ -39,6 +46,10 @@ export default function App() {
   const [routeOpen, setRouteOpen] = useState(false);
   const [routeOrigin, setRouteOrigin] = useState('');
   const [routeDest, setRouteDest] = useState('');
+  const [routePriority, setRoutePriority] = useState<'fast' | 'few'>('fast');
+  const [reachOrigin, setReachOrigin] = useState<string | null>(null);
+  const [disrupted, setDisrupted] = useState<Set<string>>(() => new Set());
+  const [serviceStatuses, setServiceStatuses] = useState<ServiceStatus[]>([]);
 
   // ダッシュボードのカードクリック → 3Dマップで該当路線へフォーカス
   function focusLine(lineId: string) {
@@ -46,18 +57,58 @@ export default function App() {
     setView('map');
   }
 
+  // 路線の運休/復旧を切り替える（経路グラフが再計算され、乗換案内・到達圏に反映される）
+  function toggleDisrupt(lineId: string) {
+    setDisrupted((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  }
+
   // フォーカス中の路線名
   const focusedLine = focusLineId ? lines.find((l) => l.id === focusLineId) : undefined;
 
+  // 運転見合わせの路線を OSM 路線にマッチし、実運休として経路から除外する
+  const realDisrupted = useMemo(() => {
+    const ids = new Set<string>();
+    const suspended = serviceStatuses.filter((s) => s.severity === 'suspended');
+    if (suspended.length === 0) return ids;
+    for (const line of lines) {
+      if (suspended.some((s) => line.name.includes(s.lineName))) ids.add(line.id);
+    }
+    return ids;
+  }, [serviceStatuses, lines]);
+
+  // 手動運休 ＋ 実運休（運転見合わせ）を統合する
+  const allDisrupted = useMemo(() => {
+    if (realDisrupted.size === 0) return disrupted;
+    const next = new Set(disrupted);
+    for (const id of realDisrupted) next.add(id);
+    return next;
+  }, [disrupted, realDisrupted]);
+
   // 経路探索グラフ（路線データから構築。重いので memo 化）
-  const graph = useMemo(() => (lines.length ? buildRouteGraph(lines) : null), [lines]);
+  const graph = useMemo(
+    () => (lines.length ? buildRouteGraph(lines, allDisrupted) : null),
+    [lines, allDisrupted],
+  );
   const linesById = useMemo(() => new Map(lines.map((l) => [l.id, l])), [lines]);
+
+  // 到達圏（出発駅から各駅への所要時間）。出発駅が選ばれている間だけ計算する。
+  const reach = useMemo<ReachData | null>(() => {
+    if (!graph || !reachOrigin) return null;
+    return { origin: reachOrigin, times: reachableTimes(graph, reachOrigin) };
+  }, [graph, reachOrigin]);
 
   // 出発・目的が揃ったら経路を探索
   const route = useMemo(() => {
     if (!graph || !routeOrigin.trim() || !routeDest.trim()) return null;
-    return findRoute(graph, routeOrigin.trim(), routeDest.trim());
-  }, [graph, routeOrigin, routeDest]);
+    // 「乗換少ない」優先のときは乗換ペナルティを大きくして乗換を避ける
+    const penalty = routePriority === 'few' ? 1200 : undefined;
+    return findRoute(graph, routeOrigin.trim(), routeDest.trim(), penalty);
+  }, [graph, routeOrigin, routeDest, routePriority]);
 
   // 経路の地図ハイライト
   const routeHighlight = useMemo(() => {
@@ -97,32 +148,44 @@ export default function App() {
       setMessage('');
     }
 
-    // 実データモード（ODPT）を開始する
-    async function startLive() {
-      setSource(SOURCE_ODPT);
-      setMessage('実データ（ODPT）を読み込み中…');
-      const network = await loadLiveNetwork();
+    // ハイブリッドモード（OSM 全路線シミュレーション ＋ ODPT 実列車）を開始する
+    async function startHybrid() {
+      setSource(`${SOURCE_OSM} ＋ ${SOURCE_ODPT}`);
+      setMessage('全路線データ ＋ 実データ（ODPT）を読み込み中…');
+      const network = await loadHybridNetwork();
       if (cancelled) return;
       if (network.lines.length === 0) {
         throw new Error('路線データを取得できませんでした');
       }
       sim.setLines(network.lines);
+      // OSM 路線はシミュレーションで走らせる（実列車路線は ODPT で上書きする）
+      seedStaticTrains(sim, network.simLines);
       setLines(network.lines);
       setStations(network.stations);
       setVersion((v) => v + 1);
       setMode('LIVE');
+      setTrainCount(sim.trainCount());
+      setLastUpdate(currentTimeLabel());
 
-      // 列車現在位置を定期取得する
+      // 実列車を提供する路線が無い場合（深夜帯など）はシミュレーションのみで表示する
+      if (network.liveLines.length === 0) {
+        setMessage(
+          '現在、実列車を提供する路線がありません（深夜帯など）。全路線シミュレーションで表示中です。',
+        );
+        return;
+      }
+      setMessage('');
+
+      // 実列車路線の現在位置を定期取得して上書きする
       const poll = async () => {
         try {
-          const count = await updateLiveTrains(sim, network.lines);
+          await updateLiveTrains(sim, network.liveLines);
           if (cancelled) return;
-          setTrainCount(count);
+          setTrainCount(sim.trainCount());
           setLastUpdate(currentTimeLabel());
-          setMessage('');
         } catch (err) {
           if (cancelled) return;
-          setMessage(`列車データの取得に失敗: ${(err as Error).message}`);
+          setMessage(`実列車データの取得に失敗: ${(err as Error).message}`);
         }
       };
       await poll();
@@ -131,7 +194,7 @@ export default function App() {
 
     // トークンの有無でモードを切り替える
     if (hasToken()) {
-      startLive().catch((err) => {
+      startHybrid().catch((err) => {
         if (cancelled) return;
         // 実データに失敗したら静的モードへフォールバック
         startStatic(`実データ取得に失敗したため OSM 表示に切替えました（${(err as Error).message}）`).catch(
@@ -147,6 +210,30 @@ export default function App() {
       if (timer) clearInterval(timer);
     };
   }, []);
+
+  // 運行情報（実データ）を定期取得する（トークンがあるときのみ）
+  useEffect(() => {
+    if (!hasToken()) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const statuses = await fetchServiceStatus();
+        if (!cancelled) setServiceStatuses(statuses);
+      } catch {
+        /* 運行情報の取得失敗は無視（他機能に影響させない） */
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // 運行情報のうち「乱れているもの」だけを抽出（パネル表示用）
+  const tokenAvailable = hasToken();
+  const serviceIssues = serviceStatuses.filter((s) => s.severity !== 'normal');
 
   return (
     <>
@@ -178,6 +265,8 @@ export default function App() {
             focusLineId={focusLineId}
             onStationClick={setSelectedStation}
             route={routeHighlight}
+            reach={reach}
+            disruptedLineIds={allDisrupted}
           />
           {selectedStation ? (
             <StationPanel
@@ -189,15 +278,83 @@ export default function App() {
               onFocusLine={focusLine}
               onSetOrigin={(name) => setRouteEndpoint(name, 'origin')}
               onSetDest={(name) => setRouteEndpoint(name, 'dest')}
+              onShowReach={(name) => {
+                // 到達圏モードに入る（経路・フォーカスとは排他）
+                setReachOrigin(name);
+                setSelectedStation(null);
+                setFocusLineId(null);
+                setRouteOpen(false);
+                setRouteOrigin('');
+                setRouteDest('');
+              }}
             />
           ) : null}
-          {focusedLine && !routeHighlight ? (
+          {focusedLine && !routeHighlight && !reach ? (
             <div className="focus-banner">
               <span className="focus-dot" style={{ background: `rgb(${focusedLine.color[0]},${focusedLine.color[1]},${focusedLine.color[2]})` }} />
               <span className="focus-name">{focusedLine.name}</span>
+              <button
+                className={`focus-disrupt${disrupted.has(focusedLine.id) ? ' active' : ''}`}
+                type="button"
+                onClick={() => toggleDisrupt(focusedLine.id)}
+              >
+                {disrupted.has(focusedLine.id) ? '✓ 運休中（復旧）' : '🚫 運休にする'}
+              </button>
               <button className="focus-clear" type="button" onClick={() => setFocusLineId(null)}>
                 ✕ 解除
               </button>
+            </div>
+          ) : null}
+          {disrupted.size > 0 ? (
+            <div className="disrupt-banner">
+              <div className="disrupt-head">
+                <span className="disrupt-title">🚫 運休中 {disrupted.size} 路線</span>
+                <button
+                  className="disrupt-clear"
+                  type="button"
+                  onClick={() => setDisrupted(new Set())}
+                >
+                  全復旧
+                </button>
+              </div>
+              <div className="disrupt-list">
+                {[...disrupted].map((id) => {
+                  const l = linesById.get(id);
+                  if (!l) return null;
+                  return (
+                    <button
+                      key={id}
+                      className="disrupt-chip"
+                      type="button"
+                      onClick={() => toggleDisrupt(id)}
+                      title="クリックで復旧"
+                    >
+                      <span
+                        className="disrupt-chip-dot"
+                        style={{ background: `rgb(${l.color[0]},${l.color[1]},${l.color[2]})` }}
+                      />
+                      {l.name} ✕
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+          {reach ? (
+            <div className="reach-banner">
+              <div className="reach-head">
+                <span className="reach-title">到達圏 — {reach.origin} から</span>
+                <button className="reach-clear" type="button" onClick={() => setReachOrigin(null)}>
+                  ✕ 解除
+                </button>
+              </div>
+              <div className="reach-legend">
+                <span><i style={{ background: 'rgb(80,220,120)' }} />〜15分</span>
+                <span><i style={{ background: 'rgb(200,220,80)' }} />〜30分</span>
+                <span><i style={{ background: 'rgb(245,165,70)' }} />〜45分</span>
+                <span><i style={{ background: 'rgb(240,95,80)' }} />〜60分</span>
+                <span><i style={{ background: 'rgb(150,90,120)' }} />60分超</span>
+              </div>
             </div>
           ) : null}
           {routeOpen ? (
@@ -208,6 +365,9 @@ export default function App() {
               setOrigin={setRouteOrigin}
               setDest={setRouteDest}
               route={route}
+              priority={routePriority}
+              setPriority={setRoutePriority}
+              onFocusLeg={focusLine}
               onClose={() => {
                 // パネルを閉じ、経路ハイライトもクリアして通常表示に戻す
                 setRouteOpen(false);
@@ -230,6 +390,21 @@ export default function App() {
               message={message}
               source={source}
             />
+          ) : null}
+          {tokenAvailable && serviceIssues.length > 0 ? (
+            <div className="service-panel">
+              <div className="service-head">⚠ 運行情報（メトロ・都営）</div>
+              <div className="service-list">
+                {serviceIssues.map((s, i) => (
+                  <div key={`${s.lineName}-${i}`} className={`service-item ${s.severity}`}>
+                    <span className="service-line">{s.lineName}</span>
+                    <span className="service-status">
+                      {s.severity === 'suspended' ? '運転見合わせ' : s.status || '遅延・乱れ'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : null}
         </>
       ) : (

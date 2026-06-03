@@ -268,6 +268,91 @@ function reconstructBetween(components, A, B) {
   return best ? best.seg : [[A.lng, A.lat], [B.lng, B.lat]];
 }
 
+// 連結成分（実線形）への射影点の弧長（m）と距離（m）を返す。
+// 駅を線形に沿った順序に並べ替えるために使う。
+function projectArc(comp, lng, lat) {
+  let best = Infinity;
+  let bestArc = 0;
+  let bestPoint = comp[0];
+  let arc = 0;
+  const kx = Math.cos(lat * (Math.PI / 180)); // 経度方向の緯度補正
+  for (let i = 0; i + 1 < comp.length; i++) {
+    const ax = comp[i][0] * kx;
+    const ay = comp[i][1];
+    const bx = comp[i + 1][0] * kx;
+    const by = comp[i + 1][1];
+    const px = lng * kx;
+    const py = lat;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const ex = px - (ax + dx * t);
+    const ey = py - (ay + dy * t);
+    const d2 = ex * ex + ey * ey;
+    const segLen = distMeters(comp[i][0], comp[i][1], comp[i + 1][0], comp[i + 1][1]);
+    if (d2 < best) {
+      best = d2;
+      bestArc = arc + segLen * t;
+      bestPoint = [
+        comp[i][0] + (comp[i + 1][0] - comp[i][0]) * t,
+        comp[i][1] + (comp[i + 1][1] - comp[i][1]) * t,
+      ];
+    }
+    arc += segLen;
+  }
+  return { arc: bestArc, dist: distMeters(lng, lat, bestPoint[0], bestPoint[1]) };
+}
+
+// 隣接した同名駅をまとめる
+function dedupAdjacentStations(arr) {
+  const out = [];
+  for (const s of arr) {
+    if (!out.length || out[out.length - 1].name !== s.name) out.push(s);
+  }
+  return out;
+}
+
+// 停車駅を「実線形（最も多くの駅を通る連結成分）」に沿った順に並べ替える。
+// OSM のメンバー順は方向・系統が混在して乱れることがあるため、線形へ射影して正す。
+function orderStationsAlongTrack(stations, components) {
+  if (components.length === 0 || stations.length < 3) return stations;
+  // 各成分が 200m 以内に通る駅数を数え、最も多い成分を主線とする
+  const projByComp = components.map((comp) => stations.map((s) => projectArc(comp, s.lng, s.lat)));
+  let mainIdx = 0;
+  let mainCover = -1;
+  components.forEach((_, c) => {
+    const cover = projByComp[c].filter((r) => r.dist < 200).length;
+    if (cover > mainCover) {
+      mainCover = cover;
+      mainIdx = c;
+    }
+  });
+  const projMain = projByComp[mainIdx];
+  // 主線に整合する駅（300m 以内）は弧長順、それ以外は元の順序のまま末尾に残す
+  const aligned = [];
+  const rest = [];
+  stations.forEach((s, i) => {
+    if (projMain[i].dist < 300) aligned.push({ s, arc: projMain[i].arc });
+    else rest.push(s);
+  });
+  if (aligned.length < 2) return stations; // 並べ替えに足る整合駅がない
+  aligned.sort((a, b) => a.arc - b.arc);
+  const sorted = [...aligned.map((x) => x.s), ...rest];
+  // 隣接駅間の距離合計（駅順の自然さ）が明確に短くなるときだけ採用する。
+  // 元から正しい順序の路線（地下鉄など）を、貧弱な線形への射影で却って乱さないための保険。
+  const chainLen = (arr) => {
+    let s = 0;
+    for (let i = 0; i + 1 < arr.length; i++) {
+      s += distMeters(arr[i].lng, arr[i].lat, arr[i + 1].lng, arr[i + 1].lat);
+    }
+    return s;
+  };
+  return chainLen(sorted) < chainLen(stations) * 0.98 ? sorted : stations;
+}
+
 // 駅の並び順に沿って、隣接駅間を線路（または直線）でつなぎ、全駅をカバーする path を再構築する
 function reconstructPath(components, stations) {
   const path = [];
@@ -446,8 +531,11 @@ out geom;`,
     const tags = rel.tags || {};
     const name = baseName(tags);
     if (!name) continue;
-    const lineStations = buildLineStations(rel); // この路線の停車駅（順序つき）
     const components = buildComponents(rel);
+    // 停車駅を取得し、実線形に沿った順序へ整える（OSM のメンバー順の乱れを補正）
+    const lineStations = dedupAdjacentStations(
+      orderStationsAlongTrack(buildLineStations(rel), components),
+    );
 
     // 駅順に沿って全駅をカバーする path を再構築する（駅情報が無ければ最長成分）
     let raw;

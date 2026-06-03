@@ -7,6 +7,8 @@ interface Props {
   setOrigin: (s: string) => void;
   setDest: (s: string) => void;
   route: RouteResult | null;
+  priority: 'fast' | 'few';
+  setPriority: (p: 'fast' | 'few') => void;
   onClose: () => void;
   onFocusLeg?: (lineId: string) => void;
 }
@@ -28,6 +30,8 @@ export default function RoutePanel({
   setOrigin,
   setDest,
   route,
+  priority,
+  setPriority,
   onClose,
   onFocusLeg,
 }: Props) {
@@ -98,6 +102,24 @@ export default function RoutePanel({
         />
       </div>
 
+      {/* 優先度の切替 */}
+      <div className="rp-priority">
+        <button
+          className={`rp-pri-btn${priority === 'fast' ? ' active' : ''}`}
+          type="button"
+          onClick={() => setPriority('fast')}
+        >
+          ⚡ 速い
+        </button>
+        <button
+          className={`rp-pri-btn${priority === 'few' ? ' active' : ''}`}
+          type="button"
+          onClick={() => setPriority('few')}
+        >
+          🔁 乗換少ない
+        </button>
+      </div>
+
       {/* 結果 */}
       {ready && route ? (
         <div className="rp-result">
@@ -105,6 +127,9 @@ export default function RoutePanel({
             <span className="rp-total">{formatMin(route.totalSec)}</span>
             <span className="rp-meta">
               乗換 {route.transfers} 回 / {route.stops} 駅
+            </span>
+            <span className="rp-fare">
+              約 {route.fareYen.toLocaleString()} 円 ・ {(route.distanceM / 1000).toFixed(1)} km
             </span>
           </div>
           <div className="rp-legs">

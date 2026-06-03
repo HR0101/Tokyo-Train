@@ -18,6 +18,7 @@ interface Props {
   onFocusLine: (lineId: string) => void;
   onSetOrigin?: (name: string) => void;
   onSetDest?: (name: string) => void;
+  onShowReach?: (name: string) => void;
 }
 
 // RGB を CSS 文字列に
@@ -41,6 +42,7 @@ export default function StationPanel({
   onFocusLine,
   onSetOrigin,
   onSetDest,
+  onShowReach,
 }: Props) {
   // 乗り入れ路線（駅が変わったときだけ計算）
   const serving = useMemo(() => findServingLines(station, lines), [station, lines]);
@@ -74,6 +76,12 @@ export default function StationPanel({
           ここへ行く
         </button>
       </div>
+
+      {onShowReach ? (
+        <button className="sp-reach-btn" type="button" onClick={() => onShowReach(station.name)}>
+          ⏱ ここからの到達圏を見る
+        </button>
+      ) : null}
 
       <div className="sp-section-title">乗り入れ・乗り換え路線（{serving.length}）</div>
       {serving.length > 0 ? (

@@ -484,6 +484,237 @@ body,
   color: #eaf3ff;
 }
 
+/* 路線フォーカス時の運休トグルボタン */
+.focus-disrupt {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(150, 70, 70, 0.3);
+  color: #f0c8c8;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.focus-disrupt:hover {
+  background: rgba(210, 80, 80, 0.5);
+  color: #fff;
+}
+
+.focus-disrupt.active {
+  background: rgba(220, 70, 70, 0.7);
+  color: #fff;
+}
+
+/* 運休中バナー（左上・運休路線一覧） */
+.disrupt-banner {
+  position: absolute;
+  top: 64px;
+  left: 16px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(22, 10, 12, 0.9);
+  border: 1px solid rgba(220, 90, 90, 0.4);
+  backdrop-filter: blur(12px);
+  max-width: 280px;
+}
+
+.disrupt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.disrupt-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffd0d0;
+}
+
+.disrupt-clear {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(150, 90, 90, 0.4);
+  color: #ffe0e0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.disrupt-clear:hover {
+  background: rgba(210, 90, 90, 0.6);
+  color: #fff;
+}
+
+.disrupt-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.disrupt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid rgba(220, 100, 100, 0.35);
+  border-radius: 7px;
+  background: rgba(40, 20, 24, 0.8);
+  color: #f0d0d0;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.disrupt-chip:hover {
+  background: rgba(80, 30, 35, 0.9);
+}
+
+.disrupt-chip-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* 運行情報パネル（右下・実データの遅延/見合わせ） */
+.service-panel {
+  position: absolute;
+  bottom: 20px;
+  right: 16px;
+  z-index: 14;
+  width: 240px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(22, 16, 8, 0.9);
+  border: 1px solid rgba(220, 170, 80, 0.4);
+  backdrop-filter: blur(12px);
+}
+
+.service-head {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffd9a0;
+  margin-bottom: 8px;
+}
+
+.service-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.service-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.service-item.delay {
+  background: rgba(150, 110, 30, 0.3);
+  border: 1px solid rgba(230, 180, 70, 0.4);
+}
+
+.service-item.suspended {
+  background: rgba(150, 40, 40, 0.35);
+  border: 1px solid rgba(240, 90, 90, 0.5);
+}
+
+.service-line {
+  font-weight: 700;
+  color: #f3ead8;
+}
+
+.service-status {
+  font-size: 11px;
+  color: #ffcf9a;
+}
+
+.service-item.suspended .service-status {
+  color: #ffb0b0;
+}
+
+/* 到達圏バナー（上中央・凡例つき） */
+.reach-banner {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(8, 12, 22, 0.88);
+  border: 1px solid rgba(90, 130, 200, 0.35);
+  backdrop-filter: blur(12px);
+  max-width: 80vw;
+}
+
+.reach-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.reach-title {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.reach-clear {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(90, 110, 150, 0.3);
+  color: #c8d8ef;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reach-clear:hover {
+  background: rgba(120, 150, 210, 0.45);
+  color: #eaf3ff;
+}
+
+.reach-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: #b8c8e2;
+}
+
+.reach-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reach-legend i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
 /* 駅情報パネル（右側） */
 .station-panel {
   position: absolute;
@@ -683,6 +914,26 @@ body,
   border-color: rgba(255, 90, 90, 0.6);
 }
 
+/* 到達圏 起動ボタン（駅パネル内） */
+.sp-reach-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(110, 160, 240, 0.35);
+  border-radius: 8px;
+  background: rgba(20, 28, 46, 0.8);
+  color: #e5f2ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.sp-reach-btn:hover {
+  background: rgba(30, 50, 90, 0.7);
+  border-color: rgba(120, 180, 255, 0.6);
+}
+
 /* 乗換案内 起動ボタン */
 .route-launch {
   position: absolute;
@@ -844,7 +1095,8 @@ body,
 .rp-summary {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   margin-bottom: 10px;
 }
 
@@ -857,6 +1109,39 @@ body,
 .rp-meta {
   font-size: 12px;
   color: #8ea3c4;
+}
+
+.rp-fare {
+  font-size: 12px;
+  font-weight: 700;
+  color: #9fe3b0;
+  width: 100%;
+}
+
+/* 優先度の切替（速い / 乗換少ない） */
+.rp-priority {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.rp-pri-btn {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid rgba(90, 130, 200, 0.3);
+  border-radius: 8px;
+  background: rgba(20, 28, 46, 0.8);
+  color: #b8c8e2;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.rp-pri-btn.active {
+  background: rgba(40, 90, 150, 0.6);
+  border-color: rgba(110, 180, 255, 0.6);
+  color: #eaf5ff;
 }
 
 .rp-legs {
