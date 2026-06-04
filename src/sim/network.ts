@@ -158,8 +158,41 @@ export async function loadStaticNetwork(): Promise<Network> {
 }
 
 // 静的モードの列車を配置する
+// 路線名から種別・方向・方面の修飾を取り除き、基幹となる路線名を求める。
+// 例:「JR横浜線 各駅停車」「JR横浜線 快速」→「JR横浜線」、
+//    「東急東横線: 渋谷 => 横浜」「東急東横線: 横浜 => 渋谷」→「東急東横線」。
+// 同じ基幹路線（＝同じ線路）に属する系統をまとめるために使う。
+const LINE_TYPE_WORDS =
+  /(通勤特急|快速特急|通勤快速|通勤準急|快速急行|区間快速|空港快速|各駅停車|各駅|各停|準急|急行|快速|特急|普通|ライナー|内回り|外回り)/g;
+
+function baseLineName(name: string): string {
+  let s = name;
+  // 「: 渋谷 => 横浜」「: 中野→西船橋」などの方向・区間表記を落とす
+  s = s.replace(/[:：].*$/, '');
+  // 種別（各駅停車・快速・急行 …）を落とす
+  s = s.replace(LINE_TYPE_WORDS, '');
+  // 接頭辞「列車 」と区切り記号・空白を整理する
+  s = s.replace(/^列車\s*/, '');
+  s = s.replace(/[・•/\s]+/g, '');
+  return s.trim();
+}
+
+// 静的モードの列車を配置する。
+// OSM には同じ線路を共有する系統（各駅停車／快速、上り／下り など）が別路線として
+// 含まれており、全てに列車を出すと同じ線路上で列車が重なって見える。そこで同一の
+// 基幹路線につき最も区間の多い 1 系統だけを代表として選び、その路線にだけ列車を走らせる。
+// 路線ライン自体の描画や乗換案内のグラフは全系統のまま（列車の生成のみを間引く）。
 export function seedStaticTrains(sim: TrainSim, lines: RailLine[]): void {
-  seedTrainsAlongLines(sim, lines, STATIC_TRAIN_SPEED_MPS, 'static');
+  const repByBase = new Map<string, RailLine>();
+  for (const line of lines) {
+    const key = baseLineName(line.name) || line.id;
+    const current = repByBase.get(key);
+    // 代表は最も多くの区間（path 頂点数）を持つ系統を採用する
+    if (!current || line.path.length > current.path.length) {
+      repByBase.set(key, line);
+    }
+  }
+  seedTrainsAlongLines(sim, [...repByBase.values()], STATIC_TRAIN_SPEED_MPS, 'static');
 }
 
 // --- 実データモード（ODPT） ---------------------------------------

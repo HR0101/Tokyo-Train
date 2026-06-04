@@ -79,30 +79,35 @@ body,
 
 .hud-stats {
   display: flex;
-  gap: 14px;
+  gap: 8px;
   margin: 16px 0 10px;
 }
 
 .stat {
   flex: 1;
+  min-width: 0; 
   text-align: center;
-  padding: 10px 4px;
+  padding: 10px 2px; 
   border-radius: 10px;
   background: rgba(20, 30, 50, 0.6);
 }
 
 .stat-num {
-  font-size: 26px;
+  font-size: 22px; 
   font-weight: 800;
   line-height: 1;
   color: #6fd0ff;
   font-variant-numeric: tabular-nums;
+  overflow: hidden; 
+  text-overflow: ellipsis; 
+  white-space: nowrap; 
 }
 
 .stat-label {
   margin-top: 5px;
-  font-size: 11px;
+  font-size: 10px; 
   color: #8ea3c4;
+  white-space: nowrap; 
 }
 
 .hud-update {
@@ -588,7 +593,8 @@ body,
 /* 運行情報パネル（右下・実データの遅延/見合わせ） */
 .service-panel {
   position: absolute;
-  bottom: 20px;
+  /* 右下のナビゲーションコントロール（ズーム／視点ボタン）の上に逃がす */
+  bottom: 116px;
   right: 16px;
   z-index: 14;
   width: 240px;
@@ -937,7 +943,8 @@ body,
 /* 乗換案内 起動ボタン */
 .route-launch {
   position: absolute;
-  bottom: 20px;
+  /* 左下の帰属表示（© CARTO/OSM）の上に逃がす */
+  bottom: 48px;
   left: 16px;
   z-index: 14;
   padding: 11px 16px;
@@ -956,6 +963,98 @@ body,
   background: rgba(30, 50, 90, 0.9);
 }
 
+/* 運転席ビュー起動ボタン（左下・乗換ボタンの上） */
+.cab-launch {
+  position: absolute;
+  bottom: 96px;
+  left: 16px;
+  z-index: 14;
+  padding: 11px 16px;
+  border: 1px solid rgba(110, 200, 240, 0.45);
+  border-radius: 10px;
+  background: rgba(8, 12, 22, 0.85);
+  color: #eaf3ff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+.cab-launch:hover {
+  background: rgba(20, 50, 70, 0.9);
+}
+
+/* 運転席ビュー中のバナー（上中央） */
+.cab-banner {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 14px;
+  border-radius: 999px;
+  background: rgba(8, 12, 22, 0.92);
+  border: 1px solid rgba(110, 160, 240, 0.5);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.cab-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cab-line {
+  font-size: 14px;
+  font-weight: 800;
+  color: #eaf3ff;
+}
+
+.cab-tag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(60, 120, 220, 0.3);
+  color: #9cc0ff;
+}
+
+.cab-exit {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 120, 120, 0.5);
+  background: rgba(60, 20, 24, 0.7);
+  color: #ffb0b0;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cab-exit:hover {
+  background: rgba(120, 40, 44, 0.85);
+}
+
+/* 運転席ビュー中は周辺 UI を隠す */
+body.cab-mode .view-toggle,
+body.cab-mode .hud,
+body.cab-mode .route-launch,
+body.cab-mode .cab-launch,
+body.cab-mode .route-panel,
+body.cab-mode .reach-banner,
+body.cab-mode .service-panel,
+body.cab-mode .disrupt-banner,
+body.cab-mode .focus-disrupt,
+body.cab-mode .station-panel {
+  display: none !important;
+}
+
 /* 乗換案内パネル（左側） */
 .route-panel {
   position: absolute;
@@ -963,7 +1062,8 @@ body,
   left: 16px;
   z-index: 17;
   width: 320px;
-  max-height: calc(100vh - 36px);
+  /* 左下の帰属表示（© CARTO 等）と被らないよう下端に余白を残す */
+  max-height: calc(100vh - 150px);
   overflow-y: auto;
   padding: 14px 16px 16px;
   border-radius: 14px;
@@ -1118,16 +1218,22 @@ body,
   width: 100%;
 }
 
-/* 優先度の切替（速い / 乗換少ない） */
-.rp-priority {
-  display: flex;
-  gap: 8px;
+/* 時刻指定（今すぐ／出発時刻／到着時刻） */
+.rp-time {
   margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.rp-pri-btn {
+.rp-time-modes {
+  display: flex;
+  gap: 4px;
+}
+
+.rp-time-btn {
   flex: 1;
-  padding: 7px 10px;
+  padding: 7px 4px;
   border: 1px solid rgba(90, 130, 200, 0.3);
   border-radius: 8px;
   background: rgba(20, 28, 46, 0.8);
@@ -1138,10 +1244,136 @@ body,
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.rp-pri-btn.active {
+.rp-time-btn:hover {
+  color: #d8e6ff;
+}
+
+.rp-time-btn.active {
   background: rgba(40, 90, 150, 0.6);
   border-color: rgba(110, 180, 255, 0.6);
   color: #eaf5ff;
+}
+
+.rp-time-input {
+  padding: 8px 12px;
+  border: 1px solid rgba(90, 130, 200, 0.3);
+  border-radius: 8px;
+  background: rgba(8, 12, 22, 0.8);
+  color: #e5f2ff;
+  font-size: 14px;
+  outline: none;
+  color-scheme: dark;
+}
+
+.rp-time-input:focus {
+  border-color: rgba(110, 160, 240, 0.7);
+}
+
+.rp-time-note {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8ea3c4;
+}
+
+/* ルート候補の一覧 */
+.rp-routes {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rp-route-card {
+  border: 1px solid rgba(90, 130, 200, 0.22);
+  border-radius: 12px;
+  background: rgba(14, 20, 34, 0.7);
+  overflow: hidden;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.rp-route-card.active {
+  border-color: rgba(110, 160, 240, 0.7);
+  background: rgba(20, 30, 52, 0.92);
+}
+
+.rp-route-head {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 11px 13px;
+  border: none;
+  background: transparent;
+}
+
+.rp-route-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.rp-route-badges:not(:empty) {
+  margin-bottom: 6px;
+}
+
+.rp-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+
+.rp-badge.speed {
+  background: rgba(0, 200, 130, 0.18);
+  color: #2bffae;
+  border: 1px solid rgba(43, 255, 174, 0.45);
+}
+
+.rp-badge.few {
+  background: rgba(120, 160, 220, 0.18);
+  color: #9cc0ff;
+  border: 1px solid rgba(156, 192, 255, 0.45);
+}
+
+.rp-badge.fare {
+  background: rgba(255, 180, 0, 0.16);
+  color: #ffce54;
+  border: 1px solid rgba(255, 206, 84, 0.45);
+}
+
+.rp-route-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.rp-route-time {
+  font-size: 22px;
+  font-weight: 800;
+  color: #6fd0ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.rp-route-clock {
+  font-size: 13px;
+  font-weight: 700;
+  color: #9fe3b0;
+  font-variant-numeric: tabular-nums;
+}
+
+.rp-route-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #8ea3c4;
+}
+
+/* ルートカード内の詳細経路 */
+.rp-route-card .rp-legs {
+  padding: 4px 13px 12px;
 }
 
 .rp-legs {

@@ -44,7 +44,13 @@ const SERVICE_NAME =
 
 // 乗り換え路線として不適切（特急・新幹線の列車名、英語系統名、複数路線の連結系統名）か
 export function isServiceRelation(name: string): boolean {
-  return ASCII_ONLY.test(name) || SERVICE_NAME.test(name) || name.includes(' - ');
+  if (ASCII_ONLY.test(name)) return true; // 英語系統名
+  if (name.includes(' - ')) return true; // 複数路線を連結した直通系統名
+  if (/新幹線/.test(name)) return true; // 新幹線は標準的な乗換経路から除外する
+  // 「○○線」で終わる正式な路線名は、特急の列車名と同じ綴り（例:「東武日光線」と特急「日光」）でも
+  // 通常路線として扱い、経路探索・乗換案内に含める
+  if (/線$/.test(name)) return false;
+  return SERVICE_NAME.test(name); // 特急などの列車名
 }
 
 // 駅の path 上の最近傍インデックスと距離を求める

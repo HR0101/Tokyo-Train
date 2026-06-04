@@ -13,9 +13,10 @@ import {
   updateLiveTrains,
   type ServiceStatus,
 } from './sim/network';
-import { buildRouteGraph, buildRouteHighlight, findRoute, reachableTimes } from './sim/router';
+import { buildRouteGraph, buildRouteHighlight, findRoutes, reachableTimes } from './sim/router';
 import { hasToken } from './odpt/client';
-import type { RailLine, StationPoint } from './sim/types';
+import type { RailLine, StationPoint, TrainState } from './sim/types';
+import type { Rgb } from './odpt/types';
 
 // 実データの再取得間隔（ミリ秒）
 const POLL_INTERVAL_MS = 15000;
@@ -46,7 +47,14 @@ export default function App() {
   const [routeOpen, setRouteOpen] = useState(false);
   const [routeOrigin, setRouteOrigin] = useState('');
   const [routeDest, setRouteDest] = useState('');
-  const [routePriority, setRoutePriority] = useState<'fast' | 'few'>('fast');
+  const [selectedRouteIdx, setSelectedRouteIdx] = useState(0);
+  // 時刻指定（now=今すぐ / depart=出発時刻 / arrive=到着時刻）
+  const [timeMode, setTimeMode] = useState<'now' | 'depart' | 'arrive'>('now');
+  const [timeValue, setTimeValue] = useState('');
+  // 運転席ビュー（前面展望）
+  const [cabTrainId, setCabTrainId] = useState<string | null>(null);
+  const [cabInfo, setCabInfo] = useState<{ lineName: string; color: Rgb } | null>(null);
+  const [boardSignal, setBoardSignal] = useState(0);
   const [reachOrigin, setReachOrigin] = useState<string | null>(null);
   const [disrupted, setDisrupted] = useState<Set<string>>(() => new Set());
   const [serviceStatuses, setServiceStatuses] = useState<ServiceStatus[]>([]);
@@ -66,6 +74,24 @@ export default function App() {
       return next;
     });
   }
+
+  // 列車を選んで運転席ビュー（前面展望）に入る
+  function pickTrain(train: TrainState) {
+    setCabTrainId(train.id);
+    setCabInfo({ lineName: train.lineName, color: train.color });
+  }
+
+  // 運転席ビューを抜ける
+  function exitCab() {
+    setCabTrainId(null);
+    setCabInfo(null);
+  }
+
+  // 運転席ビュー中は周辺の UI を隠す（body クラスで一括制御）
+  useEffect(() => {
+    document.body.classList.toggle('cab-mode', cabTrainId != null);
+    return () => document.body.classList.remove('cab-mode');
+  }, [cabTrainId]);
 
   // フォーカス中の路線名
   const focusedLine = focusLineId ? lines.find((l) => l.id === focusLineId) : undefined;
@@ -102,13 +128,19 @@ export default function App() {
     return { origin: reachOrigin, times: reachableTimes(graph, reachOrigin) };
   }, [graph, reachOrigin]);
 
-  // 出発・目的が揃ったら経路を探索
-  const route = useMemo(() => {
-    if (!graph || !routeOrigin.trim() || !routeDest.trim()) return null;
-    // 「乗換少ない」優先のときは乗換ペナルティを大きくして乗換を避ける
-    const penalty = routePriority === 'few' ? 1200 : undefined;
-    return findRoute(graph, routeOrigin.trim(), routeDest.trim(), penalty);
-  }, [graph, routeOrigin, routeDest, routePriority]);
+  // 出発・目的が揃ったら複数の経路候補を探索する
+  const routes = useMemo(() => {
+    if (!graph || !routeOrigin.trim() || !routeDest.trim()) return [];
+    return findRoutes(graph, routeOrigin.trim(), routeDest.trim(), { maxRoutes: 3 });
+  }, [graph, routeOrigin, routeDest]);
+
+  // 出発・目的を変えたら選択中ルートを先頭（最速）に戻す
+  useEffect(() => {
+    setSelectedRouteIdx(0);
+  }, [routeOrigin, routeDest]);
+
+  // 地図ハイライト等に使う「選択中」のルート
+  const route = routes[selectedRouteIdx] ?? routes[0] ?? null;
 
   // 経路の地図ハイライト
   const routeHighlight = useMemo(() => {
@@ -267,6 +299,10 @@ export default function App() {
             route={routeHighlight}
             reach={reach}
             disruptedLineIds={allDisrupted}
+            cabTrainId={cabTrainId}
+            onTrainPick={pickTrain}
+            onCabExit={exitCab}
+            boardSignal={boardSignal}
           />
           {selectedStation ? (
             <StationPanel
@@ -364,9 +400,13 @@ export default function App() {
               dest={routeDest}
               setOrigin={setRouteOrigin}
               setDest={setRouteDest}
-              route={route}
-              priority={routePriority}
-              setPriority={setRoutePriority}
+              routes={routes}
+              selectedIdx={selectedRouteIdx}
+              setSelectedIdx={setSelectedRouteIdx}
+              timeMode={timeMode}
+              setTimeMode={setTimeMode}
+              timeValue={timeValue}
+              setTimeValue={setTimeValue}
               onFocusLeg={focusLine}
               onClose={() => {
                 // パネルを閉じ、経路ハイライトもクリアして通常表示に戻す
@@ -376,10 +416,35 @@ export default function App() {
               }}
             />
           ) : (
-            <button className="route-launch" type="button" onClick={() => setRouteOpen(true)}>
-              🧭 乗換案内
-            </button>
+            <>
+              <button
+                className="cab-launch"
+                type="button"
+                onClick={() => setBoardSignal((s) => s + 1)}
+                title="画面の中心に近い走行中の列車に乗ります"
+              >
+                🚃 運転席ビュー
+              </button>
+              <button className="route-launch" type="button" onClick={() => setRouteOpen(true)}>
+                🧭 乗換案内
+              </button>
+            </>
           )}
+          {cabTrainId && cabInfo ? (
+            <div className="cab-banner">
+              <span
+                className="cab-dot"
+                style={{
+                  background: `rgb(${cabInfo.color[0]},${cabInfo.color[1]},${cabInfo.color[2]})`,
+                }}
+              />
+              <span className="cab-line">{cabInfo.lineName}</span>
+              <span className="cab-tag">運転席ビュー</span>
+              <button className="cab-exit" type="button" onClick={exitCab}>
+                ✕ 終了
+              </button>
+            </div>
+          ) : null}
           {!routeOpen ? (
             <Hud
               mode={mode}

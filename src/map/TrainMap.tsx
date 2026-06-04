@@ -7,6 +7,7 @@ import { DELAY_THRESHOLD_SEC, TrainSim } from '../sim/TrainSim';
 import { distanceMeters } from '../sim/geo';
 import type { RouteHighlight } from '../sim/router';
 import type { LngLat, RailLine, StationPoint, TrainState } from '../sim/types';
+import { landmarkLayers } from './landmarks';
 
 // 地図の初期表示（都心を3Dで近接俯瞰。引くと首都圏全体が見える）
 const INITIAL_CENTER: [number, number] = [139.764, 35.681];
@@ -17,12 +18,21 @@ const INITIAL_BEARING = -25;
 // CARTO の無料ダークスタイル（APIキー不要）
 const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
 
-// 列車ブロックの見た目（メートル）
+// 列車ブロックの見た目（メートル）。俯瞰時はマーカーとして見やすいよう大きめにする。
 const TRAIN_HEIGHT_M = 130;
 const TRAIN_RADIUS_M = 70;
+// 運転席ビュー時は実車に近いサイズにして違和感をなくす
+const TRAIN_HEIGHT_CAB = 4;
+const TRAIN_RADIUS_CAB = 2;
 
 // dt の上限（タブ非表示から復帰したときの飛びを抑える）
 const MAX_DT_SEC = 0.5;
+
+// 運転席ビュー（前面展望）のカメラ設定。MapLibre は高度を直接指定できないため、
+// 高ズーム＋高ピッチでカメラを低く・前傾させて運転席に近い目線を作る。
+const CAB_PITCH = 85; // 前方を見る傾き（ほぼ水平、MapLibre の上限）
+const CAB_ZOOM = 19.5; // 目線を下げるための高ズーム
+const CAB_FORWARD_M = 35; // 列車の少し前方を画面中央に置く距離（メートル）
 
 // フォーカス路線の駅とみなす、経路からの最大距離（メートル）
 const STATION_MATCH_M = 180;
@@ -83,6 +93,30 @@ function stationsNearPath(path: LngLat[], stations: StationPoint[]): StationPoin
   return result;
 }
 
+// 地点から指定の方位・距離だけ進んだ座標を返す（運転席カメラを列車の前方へ置くのに使う）
+function forwardPoint(
+  lng: number,
+  lat: number,
+  bearingDeg: number,
+  meters: number,
+): [number, number] {
+  const R = 6378137; // 地球半径（メートル）
+  const brg = (bearingDeg * Math.PI) / 180;
+  const lat1 = (lat * Math.PI) / 180;
+  const lng1 = (lng * Math.PI) / 180;
+  const dr = meters / R;
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(dr) + Math.cos(lat1) * Math.sin(dr) * Math.cos(brg),
+  );
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(brg) * Math.sin(dr) * Math.cos(lat1),
+      Math.cos(dr) - Math.sin(lat1) * Math.sin(lat2),
+    );
+  return [(lng2 * 180) / Math.PI, (lat2 * 180) / Math.PI];
+}
+
 interface Props {
   sim: TrainSim;
   lines: RailLine[];
@@ -93,6 +127,10 @@ interface Props {
   route?: RouteHighlight | null; // 乗換案内の経路ハイライト
   reach?: ReachData | null; // 到達圏マップ（出発駅から各駅への所要時間）
   disruptedLineIds?: Set<string>; // 運休路線ID（運行障害シミュレーション）
+  cabTrainId?: string | null; // 運転席ビューで追従する列車ID（null で通常表示）
+  onTrainPick?: (train: TrainState) => void; // 列車クリック／乗車リクエスト時
+  onCabExit?: () => void; // 追従中の列車が消えたとき運転席を抜ける
+  boardSignal?: number; // 値が増えると「画面中心に最も近い列車に乗る」
 }
 
 // 路線ポリラインの描画データ
@@ -117,6 +155,10 @@ export default function TrainMap({
   route,
   reach,
   disruptedLineIds,
+  cabTrainId,
+  onTrainPick,
+  onCabExit,
+  boardSignal,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -141,6 +183,19 @@ export default function TrainMap({
     paths: [],
     stations: [],
   });
+  // 運転席ビュー（前面展望）の状態
+  const cabRef = useRef<string | null>(cabTrainId ?? null);
+  const onTrainPickRef = useRef(onTrainPick);
+  onTrainPickRef.current = onTrainPick;
+  const onCabExitRef = useRef(onCabExit);
+  onCabExitRef.current = onCabExit;
+  const latestTrainsRef = useRef<TrainState[]>([]);
+  const savedCamRef = useRef<{
+    center: maplibregl.LngLat;
+    zoom: number;
+    pitch: number;
+    bearing: number;
+  } | null>(null);
 
   // 地図とオーバーレイの初期化（1 回のみ）
   useEffect(() => {
@@ -154,6 +209,7 @@ export default function TrainMap({
       pitch: INITIAL_PITCH,
       bearing: INITIAL_BEARING,
       attributionControl: false,
+      maxPitch: 85, // 運転席ビューで前方を見上げられるよう上限を引き上げる
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
     map.addControl(
@@ -365,6 +421,62 @@ export default function TrainMap({
     disruptedRef.current = disruptedLineIds ?? EMPTY_SET;
   }, [disruptedLineIds]);
 
+  // 運転席ビューの開始・終了（カメラの保存／復元と、手動操作の有効・無効）
+  useEffect(() => {
+    cabRef.current = cabTrainId ?? null;
+    const map = mapRef.current;
+    if (!map) return;
+    if (cabTrainId) {
+      if (!savedCamRef.current) {
+        savedCamRef.current = {
+          center: map.getCenter(),
+          zoom: map.getZoom(),
+          pitch: map.getPitch(),
+          bearing: map.getBearing(),
+        };
+      }
+      // カメラは列車追従で制御するため、手動操作を一時的に無効化する
+      map.dragPan.disable();
+      map.dragRotate.disable();
+      map.scrollZoom.disable();
+      map.touchZoomRotate.disable();
+      map.doubleClickZoom.disable();
+      map.keyboard.disable();
+    } else {
+      map.dragPan.enable();
+      map.dragRotate.enable();
+      map.scrollZoom.enable();
+      map.touchZoomRotate.enable();
+      map.doubleClickZoom.enable();
+      map.keyboard.enable();
+      // 運転席に入る前のカメラへ戻す
+      const saved = savedCamRef.current;
+      if (saved) {
+        map.easeTo({ ...saved, duration: 700 });
+        savedCamRef.current = null;
+      }
+    }
+  }, [cabTrainId]);
+
+  // 「近くの列車に乗る」：画面中心に最も近い列車を選んで運転席へ
+  useEffect(() => {
+    if (!boardSignal) return; // 初期値（0／未指定）では発火しない
+    const map = mapRef.current;
+    const trains = latestTrainsRef.current;
+    if (!map || trains.length === 0) return;
+    const c = map.getCenter();
+    let best = Infinity;
+    let pick: TrainState | null = null;
+    for (const t of trains) {
+      const d = distanceMeters([c.lng, c.lat], [t.lng, t.lat]);
+      if (d < best) {
+        best = d;
+        pick = t;
+      }
+    }
+    if (pick && onTrainPickRef.current) onTrainPickRef.current(pick);
+  }, [boardSignal]);
+
   // アニメーションループ（毎フレーム列車位置を更新して再描画）
   useEffect(() => {
     const animate = (time: number) => {
@@ -374,6 +486,24 @@ export default function TrainMap({
       if (dt > MAX_DT_SEC) dt = MAX_DT_SEC;
 
       const trains = sim.tick(dt);
+      latestTrainsRef.current = trains;
+
+      // 運転席ビュー：追従中の列車にカメラを乗せて前面展望にする
+      const cabId = cabRef.current;
+      if (cabId) {
+        const cabMap = mapRef.current;
+        const t = trains.find((tr) => tr.id === cabId);
+        if (cabMap && t) {
+          // 列車の少し前方を画面中央に置き、高ズーム＋高ピッチで運転席に近い低い目線にする
+          const center = forwardPoint(t.lng, t.lat, t.bearing, CAB_FORWARD_M);
+          cabMap.jumpTo({ center, bearing: t.bearing, pitch: CAB_PITCH, zoom: CAB_ZOOM });
+        } else if (!t) {
+          // 列車が運行終了などで消えたら運転席を抜ける
+          cabRef.current = null;
+          if (onCabExitRef.current) onCabExitRef.current();
+        }
+      }
+
       const overlay = overlayRef.current;
       if (overlay) {
         const { paths, stations: stationData } = staticRef.current;
@@ -384,6 +514,11 @@ export default function TrainMap({
         const reachActive = !!reach;
         const disrupted = disruptedRef.current;
         const disruptedKey = disrupted.size > 0 ? [...disrupted].sort().join('|') : '';
+        // 運転席ビュー中は自車（追従中の列車）を隠し、列車を実車サイズに縮小する
+        const cabActive = cabId != null;
+        const baseTrains =
+          disrupted.size > 0 ? trains.filter((t) => !disrupted.has(t.lineId)) : trains;
+        const cabTrains = cabActive ? baseTrains.filter((t) => t.id !== cabId) : baseTrains;
         // 駅名ラベルは一定ズーム以上のときだけ出す（密集を防ぐ）
         const zoom = mapRef.current ? mapRef.current.getZoom() : 0;
         const showLabels = !!focus && !routeActive && zoom >= 11;
@@ -395,6 +530,8 @@ export default function TrainMap({
         const routeMarkers: RouteMarker[] = routeActive ? route!.markers : [];
         overlay.setProps({
           layers: [
+            // 象徴的ランドマーク（東京タワー・スカイツリー等）。一定ズーム以上で表示。
+            ...(zoom >= 11 ? landmarkLayers() : []),
             // 路線（実線形）
             new PathLayer<PathDatum>({
               id: 'rails',
@@ -465,15 +602,26 @@ export default function TrainMap({
             // 列車（3D ブロック）
             new ColumnLayer<TrainState>({
               id: 'trains',
-              data: disrupted.size > 0 ? trains.filter((t) => !disrupted.has(t.lineId)) : trains,
+              data: cabTrains,
               diskResolution: 4,
-              radius: TRAIN_RADIUS_M,
+              radius: cabActive ? TRAIN_RADIUS_CAB : TRAIN_RADIUS_M,
               extruded: true,
               pickable: true,
+              onClick: (info) => {
+                if (info.object && onTrainPickRef.current) {
+                  onTrainPickRef.current(info.object as TrainState);
+                  return true;
+                }
+                return false;
+              },
               elevationScale: 1,
               getPosition: (t) => [t.lng, t.lat],
               getElevation: (t) =>
-                routeActive || (focus && t.lineId !== focus) ? 40 : TRAIN_HEIGHT_M,
+                cabActive
+                  ? TRAIN_HEIGHT_CAB
+                  : routeActive || (focus && t.lineId !== focus)
+                    ? 40
+                    : TRAIN_HEIGHT_M,
               getFillColor: (t) => {
                 const dimmed = routeActive || (focus && t.lineId !== focus);
                 if (t.delaySec >= DELAY_THRESHOLD_SEC) return [255, 70, 70, dimmed ? 50 : 235];
